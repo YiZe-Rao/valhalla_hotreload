@@ -18,6 +18,8 @@
 #include "config.h"
 #include "microtar.h"
 
+#include "live_traffic_utils.h"
+
 // Mmap and mtar structs copied from test/test.cc.
 struct MMap {
   MMap(const char* filename) {
@@ -110,7 +112,7 @@ void build_live_traffic_data(const boost::property_tree::ptree& config,
 
     std::stringstream buffer;
     valhalla::baldr::TrafficTileHeader header = {};
-    header.tile_id = tile_graph_id.value;
+    header.tile_id = tile_graph_id.Tile_Base().value;
     header.last_update = traffic_update_timestamp;
     header.traffic_tile_version = valhalla::baldr::TRAFFIC_TILE_VERSION;
     header.directed_edge_count = tile->header()->directededgecount();
@@ -272,16 +274,147 @@ int handle_update_live_traffic(cxxopts::ParseResult cmd_args,
   return EXIT_SUCCESS;
 }
 
+// --- CSV parsing (CLI-layer utility) ---
+
+static valhalla::mjolnir::EdgeSpeedMap parse_edge_speeds_csv(const std::string& csv_path) {
+    valhalla::mjolnir::EdgeSpeedMap result;
+    std::ifstream f(csv_path);
+    if (!f.is_open()) {
+        throw std::runtime_error("Cannot open CSV file: " + csv_path);
+    }
+
+    std::string line;
+    size_t line_no = 0;
+    while (std::getline(f, line)) {
+        line_no++;
+        if (line.empty() || line[0] == '#') continue;
+
+        // Parse: tile_id_str, edge_index, speed_kph [, congestion]
+        // tile_id_str format: "0/3381/0" or "level/tile_index/id"
+        std::vector<std::string> parts;
+        std::stringstream ss(line);
+        std::string part;
+        while (std::getline(ss, part, ',')) {
+            parts.push_back(part);
+        }
+
+        if (parts.size() < 3) {
+            std::cerr << "Warning: skipping line " << line_no
+                      << " (expected >=3 fields, got " << parts.size() << ")" << std::endl;
+            continue;
+        }
+
+        try {
+            // Parse tile_id: supports GraphId format "level/tile/id" or raw uint64
+            uint64_t tile_id;
+            if (parts[0].find('/') != std::string::npos) {
+                size_t s1 = parts[0].find('/');
+                size_t s2 = parts[0].find('/', s1 + 1);
+                uint32_t lvl = static_cast<uint32_t>(std::stoul(parts[0].substr(0, s1)));
+                uint32_t tile = static_cast<uint32_t>(std::stoul(parts[0].substr(s1 + 1, s2 - s1 - 1)));
+                uint32_t id = static_cast<uint32_t>(std::stoul(parts[0].substr(s2 + 1)));
+                tile_id = valhalla::baldr::GraphId(lvl, tile, id).tileid();
+            } else {
+                tile_id = static_cast<uint64_t>(std::stoull(parts[0]));
+            }
+            uint32_t edge_idx = static_cast<uint32_t>(std::stoul(parts[1]));
+            float speed_kph = std::stof(parts[2]);
+            uint8_t congestion = (parts.size() >= 4) ?
+                static_cast<uint8_t>(std::stoul(parts[3])) : 1;
+
+            result[tile_id].emplace_back(edge_idx, speed_kph, congestion);
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: skipping line " << line_no
+                      << " (parse error: " << e.what() << ")" << std::endl;
+        }
+    }
+    return result;
+}
+
+// --- New CLI handlers ---
+
+static int handle_update_edges(const std::string& csv_path,
+                               const boost::property_tree::ptree& pt) {
+    auto speed_map = parse_edge_speeds_csv(csv_path);
+    if (speed_map.empty()) {
+        std::cerr << "No valid edge speeds found in " << csv_path << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    uint64_t now = static_cast<uint64_t>(time(nullptr));
+    uint32_t count = valhalla::mjolnir::update_edge_live_speeds(
+        pt.get_child("mjolnir"), speed_map, now);
+
+    std::cout << "Updated " << count << " edges in "
+              << pt.get<std::string>("mjolnir.traffic_extract") << std::endl;
+    return EXIT_SUCCESS;
+}
+
+static int handle_set_edge_speed(const std::vector<std::string>& specs,
+                                 const boost::property_tree::ptree& pt) {
+    valhalla::mjolnir::EdgeSpeedMap speed_map;
+
+    for (const auto& spec : specs) {
+        // Parse: tile_id,edge_idx,speed_kph[,congestion]
+        // tile_id format: GraphId "level/tile/id" or raw uint64
+        std::vector<std::string> parts;
+        std::stringstream ss(spec);
+        std::string part;
+        while (std::getline(ss, part, ',')) {
+            parts.push_back(part);
+        }
+
+        if (parts.size() < 3) {
+            std::cerr << "Error: --set-edge-speed requires at least "
+                      << "tile_id,edge_idx,speed_kph (got " << parts.size() << ")" << std::endl;
+            return EXIT_FAILURE;
+        }
+
+        try {
+            uint64_t tile_id;
+            if (parts[0].find('/') != std::string::npos) {
+                size_t s1 = parts[0].find('/');
+                size_t s2 = parts[0].find('/', s1 + 1);
+                uint32_t lvl = static_cast<uint32_t>(std::stoul(parts[0].substr(0, s1)));
+                uint32_t tile = static_cast<uint32_t>(std::stoul(parts[0].substr(s1 + 1, s2 - s1 - 1)));
+                uint32_t id = static_cast<uint32_t>(std::stoul(parts[0].substr(s2 + 1)));
+                tile_id = valhalla::baldr::GraphId(lvl, tile, id).tileid();
+            } else {
+                tile_id = static_cast<uint64_t>(std::stoull(parts[0]));
+            }
+            uint32_t edge_idx = static_cast<uint32_t>(std::stoul(parts[1]));
+            float speed_kph = std::stof(parts[2]);
+            uint8_t congestion = (parts.size() >= 4) ?
+                static_cast<uint8_t>(std::stoul(parts[3])) : 1;
+
+            speed_map[tile_id].emplace_back(edge_idx, speed_kph, congestion);
+        } catch (const std::exception& e) {
+            std::cerr << "Error parsing spec '" << spec << "': " << e.what() << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+
+    uint64_t now = static_cast<uint64_t>(time(nullptr));
+    uint32_t count = valhalla::mjolnir::update_edge_live_speeds(
+        pt.get_child("mjolnir"), speed_map, now);
+
+    std::cout << "Updated " << count << " edges in "
+              << pt.get<std::string>("mjolnir.traffic_extract") << std::endl;
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, char** argv) {
   // args
   uint64_t way_id;
   float predicted_speed;
   uint32_t live_speed;
   std::string config_file_path;
+  std::string csv_path;
+  std::vector<std::string> edge_specs;
   try {
     // clang-format off
     cxxopts::Options options(argv[0],
-                             " - Provides utilities for adding traffic to valhalla routing tiles.");
+                             " - Provides utilities for adding live traffic to valhalla routing tiles.");
 
     options.add_options()
         ("h,help", "Print this help message.")
@@ -296,7 +429,16 @@ int main(int argc, char** argv) {
         ("generate-live-traffic", "Generate a traffic.tar archive with speed in live traffic format for a given tile and with a given constant value. Usage: --generate-live-traffic <tile_id>,<speed_in_kmph>,<time of traffic in seconds since epoch>. The tile id is a way id with the tile part set to 0, e.g. for way id 0/3381/123, tile id is 0/3381/0.",
             cxxopts::value<std::vector<std::string>>())
         ("update-live-traffic", "Update all edges in an existing traffic.tar archive with the given speed. Usage: --update-live-traffic <speed_in_kmph>.",
-            cxxopts::value<uint32_t>(live_speed));
+            cxxopts::value<uint32_t>(live_speed))
+        ("update-edges",
+         "Update specific edges in an existing traffic.tar from a CSV file. "
+         "CSV format: tile_id,edge_index,speed_kph[,congestion]",
+         cxxopts::value<std::string>())
+        ("set-edge-speed",
+         "Set speed for a specific edge. "
+         "Format: tile_id,edge_idx,speed_kph[,congestion]. "
+         "Can be specified multiple times.",
+         cxxopts::value<std::vector<std::string>>());
     // clang-format on
 
     auto result = options.parse(argc, argv);
@@ -323,6 +465,31 @@ int main(int argc, char** argv) {
 
     if (result.count("update-live-traffic")) {
       return handle_update_live_traffic(result, config_file_path, live_speed);
+    }
+
+    if (result.count("update-edges")) {
+      csv_path = result["update-edges"].as<std::string>();
+      // Load config
+      boost::property_tree::ptree pt;
+      if (result.count("config") && filesystem::is_regular_file(config_file_path)) {
+        rapidjson::read_json(config_file_path, pt);
+      } else {
+        std::cerr << "Configuration is required for --update-edges" << std::endl;
+        return EXIT_FAILURE;
+      }
+      return handle_update_edges(csv_path, pt);
+    }
+
+    if (result.count("set-edge-speed")) {
+      edge_specs = result["set-edge-speed"].as<std::vector<std::string>>();
+      boost::property_tree::ptree pt;
+      if (result.count("config") && filesystem::is_regular_file(config_file_path)) {
+        rapidjson::read_json(config_file_path, pt);
+      } else {
+        std::cerr << "Configuration is required for --set-edge-speed" << std::endl;
+        return EXIT_FAILURE;
+      }
+      return handle_set_edge_speed(edge_specs, pt);
     }
 
     std::cout << options.help() << std::endl;
