@@ -312,8 +312,9 @@ static valhalla::mjolnir::EdgeSpeedMap parse_edge_speeds_csv(const std::string& 
                 size_t s2 = parts[0].find('/', s1 + 1);
                 uint32_t lvl = static_cast<uint32_t>(std::stoul(parts[0].substr(0, s1)));
                 uint32_t tile = static_cast<uint32_t>(std::stoul(parts[0].substr(s1 + 1, s2 - s1 - 1)));
-                uint32_t id = static_cast<uint32_t>(std::stoul(parts[0].substr(s2 + 1)));
-                tile_id = valhalla::baldr::GraphId(lvl, tile, id).tileid();
+                // GraphId ctor: GraphId(tileid, level, id). Use .value so the key
+                // matches GraphTile::GetTileId().value in update_edge_live_speeds.
+                tile_id = valhalla::baldr::GraphId(tile, lvl, 0).value;
             } else {
                 tile_id = static_cast<uint64_t>(std::stoull(parts[0]));
             }
@@ -377,8 +378,8 @@ static int handle_set_edge_speed(const std::vector<std::string>& specs,
                 size_t s2 = parts[0].find('/', s1 + 1);
                 uint32_t lvl = static_cast<uint32_t>(std::stoul(parts[0].substr(0, s1)));
                 uint32_t tile = static_cast<uint32_t>(std::stoul(parts[0].substr(s1 + 1, s2 - s1 - 1)));
-                uint32_t id = static_cast<uint32_t>(std::stoul(parts[0].substr(s2 + 1)));
-                tile_id = valhalla::baldr::GraphId(lvl, tile, id).tileid();
+                // GraphId ctor: GraphId(tileid, level, id). Use .value for map key.
+                tile_id = valhalla::baldr::GraphId(tile, lvl, 0).value;
             } else {
                 tile_id = static_cast<uint64_t>(std::stoull(parts[0]));
             }
