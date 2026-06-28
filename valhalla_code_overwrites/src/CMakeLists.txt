@@ -180,6 +180,7 @@ set(valhalla_src
     worker.cc
     filesystem.cc
     proto_conversions.cc
+    ${VALHALLA_SOURCE_DIR}/src/mjolnir/live_traffic_utils.cc
     ${VALHALLA_SOURCE_DIR}/valhalla/config.h
     ${valhalla_hdrs}
     ${libvalhalla_link_objects})
