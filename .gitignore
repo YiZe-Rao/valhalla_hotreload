@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+*.dylib
+*.pc
+autom4te.cache/
+.libs/
+*.log
+
+# Core dumps
+core
+core.*
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+*.tar
+*.gz
+
+# Valhalla tiles
+*.gph
+*.pbf
+*.csv
+way_edges.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+venv/
+.env
+
+# Backup files
+*.bak
+*.backup
+
+# Datasets (large files)
+*.osm.pbf
+*.shapefile.zip
+timezones-*

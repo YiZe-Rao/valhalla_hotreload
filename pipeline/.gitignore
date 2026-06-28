@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.DS_Store
+._.*
+
+*.csv
+
+!traffic_pipeline/data/raw/trajectories/heartbeat-2025-12-01-head200000.csv
+!traffic_pipeline/data/output/stage5_speed_profile/**/*.csv
+!traffic_data/**/*.csv
+traffic_pipeline/data/output/stage1_data_clean/by_car/combined_heartbeat_sort_timeval_hiringstat.csv
