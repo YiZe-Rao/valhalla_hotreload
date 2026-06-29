@@ -353,44 +353,39 @@ static int handle_update_edges(const std::string& csv_path,
 
 static int handle_set_edge_speed(const std::vector<std::string>& specs,
                                  const boost::property_tree::ptree& pt) {
+    // cxxopts splits comma-separated values for std::vector<std::string>,
+    // so each --set-edge-speed "level/tile/0,idx,speed,cong" becomes
+    // specs = [level/tile/0, idx, speed, cong].  Process in groups of 3-4.
     valhalla::mjolnir::EdgeSpeedMap speed_map;
+    size_t i = 0;
+    while (i + 2 < specs.size()) {
+        std::string tile_str = specs[i];
+        std::string edge_str = specs[i + 1];
+        std::string speed_str = specs[i + 2];
+        std::string cong_str = (i + 3 < specs.size()) ? specs[i + 3] : "1";
 
-    for (const auto& spec : specs) {
-        // Parse: tile_id,edge_idx,speed_kph[,congestion]
-        // tile_id format: GraphId "level/tile/id" or raw uint64
-        std::vector<std::string> parts;
-        std::stringstream ss(spec);
-        std::string part;
-        while (std::getline(ss, part, ',')) {
-            parts.push_back(part);
-        }
-
-        if (parts.size() < 3) {
-            std::cerr << "Error: --set-edge-speed requires at least "
-                      << "tile_id,edge_idx,speed_kph (got " << parts.size() << ")" << std::endl;
-            return EXIT_FAILURE;
-        }
+        // Advance: if cong was present, skip 4; otherwise skip 3
+        i += (i + 3 < specs.size() &&
+              cong_str.find_first_not_of("0123456789") == std::string::npos) ? 4 : 3;
 
         try {
             uint64_t tile_id;
-            if (parts[0].find('/') != std::string::npos) {
-                size_t s1 = parts[0].find('/');
-                size_t s2 = parts[0].find('/', s1 + 1);
-                uint32_t lvl = static_cast<uint32_t>(std::stoul(parts[0].substr(0, s1)));
-                uint32_t tile = static_cast<uint32_t>(std::stoul(parts[0].substr(s1 + 1, s2 - s1 - 1)));
-                // GraphId ctor: GraphId(tileid, level, id). Use .value for map key.
+            if (tile_str.find('/') != std::string::npos) {
+                size_t s1 = tile_str.find('/');
+                size_t s2 = tile_str.find('/', s1 + 1);
+                uint32_t lvl = static_cast<uint32_t>(std::stoul(tile_str.substr(0, s1)));
+                uint32_t tile = static_cast<uint32_t>(std::stoul(tile_str.substr(s1 + 1, s2 - s1 - 1)));
                 tile_id = valhalla::baldr::GraphId(tile, lvl, 0).value;
             } else {
-                tile_id = static_cast<uint64_t>(std::stoull(parts[0]));
+                tile_id = static_cast<uint64_t>(std::stoull(tile_str));
             }
-            uint32_t edge_idx = static_cast<uint32_t>(std::stoul(parts[1]));
-            float speed_kph = std::stof(parts[2]);
-            uint8_t congestion = (parts.size() >= 4) ?
-                static_cast<uint8_t>(std::stoul(parts[3])) : 1;
+            uint32_t edge_idx = static_cast<uint32_t>(std::stoul(edge_str));
+            float speed_kph = std::stof(speed_str);
+            uint8_t congestion = static_cast<uint8_t>(std::stoul(cong_str));
 
             speed_map[tile_id].emplace_back(edge_idx, speed_kph, congestion);
         } catch (const std::exception& e) {
-            std::cerr << "Error parsing spec '" << spec << "': " << e.what() << std::endl;
+            std::cerr << "Error parsing --set-edge-speed args: " << e.what() << std::endl;
             return EXIT_FAILURE;
         }
     }
