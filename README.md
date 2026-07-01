@@ -11,6 +11,206 @@ This repository shows how to create an instance of Valhalla with both types of s
 The files needed for the two types of traffic are generated using a new tool `valhalla_traffic_demo_utils`.
 This has similar interface to existing Valhalla tools and makes use of data structures and algorithms in the Valhalla source code.
 
+---
+
+# Real-time Speed Support
+
+本项目扩展了 Valhalla 的 live traffic 能力，支持**逐边 (per-edge) 实时速度注入**和**运行时热加载 (Hot Reload)**。
+
+### 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| 单边注入 | CLI 直接指定一条边的速度，适合调试 |
+| 批量注入 | 从 CSV 文件批量注入，适合产线数据管道 |
+| 从零构建 | 无需预先存在的 traffic.tar，直接从数据创建 |
+| Hot Reload | 写入后立即生效，无需重启 valhalla_service |
+| 速度编码 | 自动将 km/h 转换为 TrafficSpeed 位字段（2 kph 分辨率） |
+
+### 数据流
+
+```
+Heartbeat GPS CSV → heartbeat_to_edge_csv.py → edge CSV → valhalla_live_traffic → traffic.tar → valhalla_service (hot reload)
+```
+
+### 零核心侵入
+
+所有修改仅涉及新增文件和 CLI 工具，**未修改任何 Valhalla 核心引擎文件** (`graphtile.h`, `graphreader.h`, `traffictile.h`, `dynamiccost.cc` 等)。
+
+---
+
+## Architecture
+
+```mermaid
+graph TD
+    subgraph "Write Path"
+        A["Heartbeat CSV"] -->|heartbeat_to_edge_csv.py| B["Edge CSV"]
+        C["--set-edge-speed"] --> D["valhalla_live_traffic"]
+        B --> D
+        D --> E["live_traffic_utils"]
+        E --> F["encode_live_speed()"]
+        F --> G["mmap in-place edit"]
+        G --> H["traffic.tar"]
+    end
+
+    subgraph "Hot Reload"
+        H -->|"POST /admin/reload_traffic"| I["GraphReader::HotReloadTrafficArchive()"]
+        I --> J["atomic swap + Trim()"]
+    end
+
+    subgraph "Read Path"
+        K["API: /locate, /route"] --> L["GraphReader::GetGraphTile()"]
+        L --> M["GraphTile::GetSpeed()"]
+        M --> N["TrafficTile::trafficspeed()"]
+        N --> O["TrafficSpeed bitfield"]
+        O --> P["speed_valid()? → blend"]
+        P --> Q["Route / Locate Response"]
+    end
+
+    J --> L
+```
+
+## Data Flow
+
+```mermaid
+sequenceDiagram
+    participant CSV as Heartbeat CSV
+    participant Script as heartbeat_to_edge_csv.py
+    participant CLI as valhalla_live_traffic
+    participant Utils as live_traffic_utils
+    participant Tar as traffic.tar (mmap)
+    participant Service as valhalla_service
+    participant GR as GraphReader
+    participant GT as GraphTile
+    participant Router as Thor Router
+
+    CSV->>Script: GPS points
+    Script->>Script: /locate map-matching
+    Script->>CLI: edge CSV output
+    CLI->>Utils: update_edge_live_speeds()
+    Utils->>Tar: mmap(PROT_READ|PROT_WRITE)
+    Utils->>Tar: const_cast write TrafficSpeed
+    Utils->>Tar: msync(MS_SYNC)
+
+    Service->>GR: HotReloadTrafficArchive()
+    GR->>Tar: load new traffic.tar
+    GR->>GR: lock + swap + Trim
+
+    Service->>GR: GetGraphTile()
+    GR->>GT: Create(base, memory, traffic_memory)
+    GT->>GT: GetSpeed(edge, flow_mask, time)
+    GT->>Router: speed (uint32_t kph)
+    Router->>Router: A* path planning
+```
+
+## How It Works
+
+```
+Request Entry
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ 1. Data Injection                                    │
+│                                                      │
+│ heartbeat CSV → edge CSV → valhalla_live_traffic     │
+│   parse_edge_speeds_csv() → EdgeSpeedMap             │
+│   update_edge_live_speeds() → mmap in-place edit     │
+│   encode_live_speed() → TrafficSpeed bitfield        │
+│   msync() → persist to traffic.tar                   │
+└─────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ 2. Hot Reload (optional)                             │
+│                                                      │
+│ GraphReader::HotReloadTrafficArchive()               │
+│   open new tar → parse entries → lock mutex          │
+│   → swap traffic_tiles + traffic_archive             │
+│   → Trim() invalidate cache                          │
+└─────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ 3. Speed Consumption                                 │
+│                                                      │
+│ GraphTile::GetSpeed()                                │
+│   Layer 1: Live Speed (kCurrentFlowMask)             │
+│     traffic_tile.trafficspeed(idx)                   │
+│     speed_valid()? → get_overall_speed()             │
+│     time-decay blend with predicted/constrained      │
+│   Layer 2: Predicted Speed (kPredictedFlowMask)      │
+│   Layer 3: Constrained Flow (daytime 7am-7pm)        │
+│   Layer 4: Free Flow (nighttime)                     │
+│   Layer 5: Default OSM Speed                         │
+│                                                      │
+│ DynamicCost → A* / Bidirectional A* → Route Response │
+└─────────────────────────────────────────────────────┘
+```
+
+## Documentation
+
+| 文档 | 说明 |
+|------|------|
+| [docs/realtime_speed_pipeline.md](docs/realtime_speed_pipeline.md) | 完整技术架构文档：数据流、Tile 结构、热加载、GetSpeed 融合策略 |
+| [docs/live-traffic-per-edge-injection.md](docs/live-traffic-per-edge-injection.md) | 用户手册：CLI 命令参考、CSV 格式、编码表、故障排查 |
+| [docs/manual-test-procedure.md](docs/manual-test-procedure.md) | 8 阶段人工测试流程：从 Docker 容器启动到验证 |
+
+## Usage
+
+### 初始化 traffic.tar
+
+```bash
+valhalla_live_traffic \
+  --config /valhalla_tiles/valhalla.json \
+  --generate-live-traffic "2/647736/0,30,$(date +%s)"
+```
+
+### 单边注入
+
+```bash
+valhalla_live_traffic --config /valhalla_tiles/valhalla.json \
+  --set-edge-speed "2/647736/0,370769,77,6"
+```
+
+### CSV 批量注入
+
+```bash
+valhalla_live_traffic --config /valhalla_tiles/valhalla.json \
+  --update-edges /tmp/edge_speeds.csv
+```
+
+### 验证注入效果
+
+```bash
+curl -s http://localhost:8002/locate?verbose=true \
+  -H "Content-Type: application/json" \
+  -d '{"locations":[{"lat":22.3430,"lon":114.1986}],"verbose":true}' \
+  | python3 -c "
+import json, sys
+resp = json.load(sys.stdin)
+for e in resp[0].get('edges', [])[:3]:
+    ei = e.get('edge_id', {})
+    ls = e.get('live_speed', {})
+    print(f'edge[{ei.get(\"id\",\"?\")}]: live={ls.get(\"overall_speed\",\"none\")} kph')
+"
+```
+
+### Hot Reload (不重启服务)
+
+```bash
+# 修改速度后服务自动感知
+valhalla_live_traffic --config /valhalla_tiles/valhalla.json \
+  --set-edge-speed "2/647736/0,370769,5,51"
+
+# 立即查询 — 无需重启
+curl -s http://localhost:8002/locate?verbose=true \
+  -H "Content-Type: application/json" \
+  -d '{"locations":[{"lat":22.3430,"lon":114.1986}],"verbose":true}' \
+  | python3 -c "import json,sys; e=json.load(sys.stdin)[0]['edges'][0]; print(e.get('live_speed',{}).get('overall_speed','none'), 'kph')"
+```
+
+---
+
 ## How to run
 
 1. Build the docker image `docker build -t valhalla-traffic .` 
