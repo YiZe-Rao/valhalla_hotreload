@@ -1,1 +1,31 @@
+# IDE
 .idea
+
+# Tiles & Map Data (large binary files)
+valhalla_tiles/
+*.osm.pbf
+*.gph
+*.tar
+*.shapefile.zip
+way_edges.txt
+duplicateways.txt
+traffic.tar
+
+# Screenshots
+screenshots/
+
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+
+# Python
+__pycache__/
+*.pyc
+
+# Docker
+*.log
+
+# Timezone data
+timezones*.zip
