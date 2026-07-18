@@ -2,7 +2,7 @@
 set -e
 
 # 配置路径
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALHALLA_DIR="$SCRIPT_DIR/valhalla"
 TILES_DIR="$SCRIPT_DIR/valhalla_tiles"
 
@@ -35,11 +35,11 @@ if [ ! -d "$SCRIPT_DIR/valhalla" ]; then
 fi
 
 # 复制自定义文件
-cp "$SCRIPT_DIR/valhalla_code_overwrites/src/mjolnir/live_traffic_utils.h" "$VALHALLA_DIR/src/mjolnir/live_traffic_utils.h"
-cp "$SCRIPT_DIR/valhalla_code_overwrites/src/mjolnir/live_traffic_utils.cc" "$VALHALLA_DIR/src/mjolnir/live_traffic_utils.cc"
-cp "$SCRIPT_DIR/valhalla_code_overwrites/src/mjolnir/valhalla_live_traffic.cc" "$VALHALLA_DIR/src/mjolnir/valhalla_live_traffic.cc"
-cp "$SCRIPT_DIR/valhalla_code_overwrites/CMakeLists.txt" "$VALHALLA_DIR/CMakeLists.txt"
-cp "$SCRIPT_DIR/valhalla_code_overwrites/src/CMakeLists.txt" "$VALHALLA_DIR/src/CMakeLists.txt"
+cp "$SCRIPT_DIR/include/valhalla_hotreload/live_traffic_utils.h" "$VALHALLA_DIR/src/mjolnir/live_traffic_utils.h"
+cp "$SCRIPT_DIR/src/live_traffic_utils.cc" "$VALHALLA_DIR/src/mjolnir/live_traffic_utils.cc"
+cp "$SCRIPT_DIR/src/valhalla_live_traffic.cc" "$VALHALLA_DIR/src/mjolnir/valhalla_live_traffic.cc"
+cp "$SCRIPT_DIR/cmake/CMakeLists.txt" "$VALHALLA_DIR/CMakeLists.txt"
+cp "$SCRIPT_DIR/cmake/src_CMakeLists.txt" "$VALHALLA_DIR/src/CMakeLists.txt"
 
 cd "$VALHALLA_DIR"
 mkdir -p build
@@ -96,7 +96,7 @@ cd "$TILES_DIR"
 valhalla_ways_to_edges --config valhalla.json
 
 # 生成交通CSV
-cp "$SCRIPT_DIR/update_traffic.py" "$TILES_DIR/traffic/update_traffic.py"
+cp "$SCRIPT_DIR/scripts/update_traffic.py" "$TILES_DIR/traffic/update_traffic.py"
 cd "$TILES_DIR/traffic"
 python3 update_traffic.py 173167308 "$TILES_DIR/valhalla_tiles/way_edges.txt"
 

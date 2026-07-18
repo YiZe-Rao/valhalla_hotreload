@@ -60,17 +60,17 @@ COPY valhalla ./valhalla
  
 # Demo utility that uses existing functions from Valhalla code
  
-COPY valhalla_code_overwrites/src/mjolnir/valhalla_live_traffic.cc valhalla/src/mjolnir/valhalla_live_traffic.cc
-COPY valhalla_code_overwrites/src/mjolnir/live_traffic_utils.h valhalla/src/mjolnir/live_traffic_utils.h
-COPY valhalla_code_overwrites/src/mjolnir/live_traffic_utils.cc valhalla/src/mjolnir/live_traffic_utils.cc
+COPY src/valhalla_live_traffic.cc valhalla/src/mjolnir/valhalla_live_traffic.cc
+COPY include/valhalla_hotreload/live_traffic_utils.h valhalla/src/mjolnir/live_traffic_utils.h
+COPY src/live_traffic_utils.cc valhalla/src/mjolnir/live_traffic_utils.cc
  
 # New CMakeLists that adds valhalla_live_traffic to the build list
  
-COPY valhalla_code_overwrites/CMakeLists.txt valhalla/CMakeLists.txt
+COPY cmake/CMakeLists.txt valhalla/CMakeLists.txt
  
 # New src CMakeLists that adds microtar library dependency for the demo utility
  
-COPY valhalla_code_overwrites/src/CMakeLists.txt valhalla/src/CMakeLists.txt
+COPY cmake/src_CMakeLists.txt valhalla/src/CMakeLists.txt
  
  
 # Build valhalla in Release mode (minimal binary size)
@@ -139,7 +139,7 @@ RUN cd valhalla_tiles; valhalla_ways_to_edges --config valhalla.json
 
 # Generate a csv with speeds for all edges
 
-COPY update_traffic.py valhalla_tiles/traffic/update_traffic.py
+COPY scripts/update_traffic.py valhalla_tiles/traffic/update_traffic.py
 
 RUN cd /valhalla_tiles/traffic; \
     OSM_WAY_ID=$(head -1 /valhalla_tiles/valhalla_tiles/way_edges.txt | cut -d',' -f1); \

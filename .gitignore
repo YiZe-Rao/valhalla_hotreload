@@ -1,5 +1,10 @@
 # IDE
 .idea
+.vscode/
+*.sln
+*.vcxproj
+*.user
+*.suo
 
 # Tiles & Map Data (large binary files)
 valhalla_tiles/
@@ -11,21 +16,66 @@ way_edges.txt
 duplicateways.txt
 traffic.tar
 
-# Screenshots
-screenshots/
+# Data files (must be excluded — CMakeLists.txt is an exception)
+*.csv
+*.json
+*.txt
+*.db
+*.sqlite
+*.parquet
+*.h5
+*.pkl
+!CMakeLists.txt
+!**/CMakeLists.txt
+!**/*CMakeLists.txt
+
+# Data directories
+data/
+dataset/
+raw_data/
+processed_data/
+input/
+output/
 
 # Build artifacts
 build/
+build_output/
+bin/
+lib/
 *.o
-*.so
 *.a
+*.so
+*.dll
+*.exe
+*.obj
+*.out
+
+# Screenshots
+screenshots/
 
 # Python
 __pycache__/
 *.pyc
+
+# Temporary and log files
+*.tmp
+*.log
+*.cache
+
+# Large binary / archive files
+*.zip
+*.tar.gz
+*.7z
+*.rar
+*.iso
+*.model
+*.weights
 
 # Docker
 *.log
 
 # Timezone data
 timezones*.zip
+
+# Superpowers
+.superpowers/

@@ -6,26 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository demonstrates how to add traffic support to the Valhalla routing engine. It includes:
 
-- **valhalla/** - The Valhalla routing engine (submodule with custom modifications)
+- **valhalla/** - The Valhalla routing engine (submodule)
 - **prime_server/** - HTTP server dependency for Valhalla services
-- **valhalla_code_overwrites/** - Custom CMakeLists and `valhalla_traffic_demo_utils.cc` for traffic features
-- **valhalla_tiles/** - Generated routing tiles and configuration (created during build)
+- **include/valhalla_hotreload/** - Public headers (`live_traffic_utils.h`)
+- **src/** - Source code (`live_traffic_utils.cc`, `valhalla_live_traffic.cc`)
+- **cmake/** - CMake overlay files for patching into Valhalla's build system
+- **scripts/** - Build and utility scripts
+- **docker/** - Docker build files
+- **docs/** - Comprehensive documentation
 
 ## Build Commands
 
 ### Full build via build script
 ```bash
-./build.sh
+bash scripts/build.sh
 ```
 
 ### Start the service
 ```bash
-./run_service.sh
+bash scripts/run_service.sh
 ```
 
 ### Docker build (alternative)
 ```bash
-docker build -t valhalla-traffic .
+docker build -f docker/Dockerfile -t valhalla-traffic .
 docker run -p 8002:8002 -it valhalla-traffic bash
 ```
 
@@ -49,7 +53,7 @@ gdb --args valhalla_service valhalla_tiles/valhalla.json 1
 
 ## Key Tools
 
-- `valhalla_traffic_demo_utils` - Custom utility for generating/managing traffic data
+- `valhalla_live_traffic` - Custom utility for generating/managing traffic data
 - `valhalla_build_tiles` - Build routing tiles from OSM data
 - `valhalla_ways_to_edges` - Generate OSM way to Valhalla edge mappings
 - `valhalla_add_predicted_traffic` - Add predicted traffic to tiles
@@ -62,14 +66,14 @@ gdb --args valhalla_service valhalla_tiles/valhalla.json 1
 
 ## Architecture
 
-The custom traffic functionality is implemented in `valhalla_traffic_demo_utils.cc` which:
+The custom traffic functionality is implemented in `src/valhalla_live_traffic.cc` which:
 - Uses Valhalla's internal `baldr::GraphReader` and `mjolnir::GraphTileBuilder`
 - Links against `microtar` library for `.tar` file manipulation
 - Reads/writes traffic data to Valhalla tile directories
 
-Key CMake modifications in `valhalla_code_overwrites/`:
-- `CMakeLists.txt` - Adds `valhalla_traffic_demo_utils` to `valhalla_data_tools`
-- `src/CMakeLists.txt` - Adds `microtar` library dependency to valhalla target
+Key CMake modifications in `cmake/`:
+- `CMakeLists.txt` - Adds `valhalla_live_traffic` to `valhalla_data_tools`
+- `src_CMakeLists.txt` - Adds `microtar` library dependency to valhalla target
 
 ## Workflow
 
@@ -77,7 +81,7 @@ Key CMake modifications in `valhalla_code_overwrites/`:
 2. `valhalla_ways_to_edges` creates `way_edges.txt` mapping OSM IDs to Valhalla edge IDs
 3. `update_traffic.py` generates traffic CSV for specific OSM ways
 4. `valhalla_add_predicted_traffic` embeds CSV data into tiles
-5. `valhalla_traffic_demo_utils --generate-live-traffic` creates `traffic.tar`
+5. `valhalla_live_traffic --generate-live-traffic` creates `traffic.tar`
 
 ## API Endpoints (port 8002)
 
