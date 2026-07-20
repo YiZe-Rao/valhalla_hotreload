@@ -174,22 +174,31 @@ def call_locate(lat: float, lon: float,
     # 取第一个匹配的 edge
     edge = edges[0]
 
-    # edge.id 是 directed edge 的 GraphId 值 (64-bit)
-    graphid_raw = edge.get('edge', {}).get('id')
-    if graphid_raw is None:
-        # 某些版本中 id 直接在 edge 级别
-        graphid_raw = edge.get('id')
-    if graphid_raw is None:
-        return None
+    # Valhalla /locate 响应结构: edge.edge_id = {id, value, tile_id, level}
+    # edge_id.id    = GraphId::id() (21-bit edge index within tile)
+    # edge_id.value = full 64-bit GraphId raw value
+    # edge_id.tile_id = 22-bit tile index
+    # edge_id.level   = hierarchy level (0-7)
+    edge_id_info = edge.get('edge_id', {})
+    if edge_id_info:
+        lvl = edge_id_info.get('level', 0)
+        tile_index = edge_id_info.get('tile_id', 0)
+        edge_idx = edge_id_info.get('id', 0)
+        graphid_raw = edge_id_info.get('value', 0)
+    else:
+        # Fallback for older valhalla versions
+        graphid_raw = edge.get('edge', {}).get('id') or edge.get('id')
+        if graphid_raw is None:
+            return None
+        lvl, tile_index, edge_idx = graphid_decompose(int(graphid_raw))
 
-    lvl, tile_index, edge_id = graphid_decompose(int(graphid_raw))
     tile_key = tile_base_value(lvl, tile_index)
 
     return {
-        'graphid_value': int(graphid_raw),
+        'graphid_value': int(graphid_raw) if graphid_raw else 0,
         'level': lvl,
         'tile_index': tile_index,
-        'edge_index': edge_id,
+        'edge_index': edge_idx,
         'tile_id_key': tile_key,
         'percent_along': edge.get('percent_along', 0.0),
         'distance': edge.get('distance', 0.0),

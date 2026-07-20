@@ -74,15 +74,19 @@ docker rm valhalla-test
 
 ## Installation of Docker 2
 
-Go to the traffic_pipeline directory
+> **注意**: `traffic_pipeline/` 目录下目前没有独立的 Dockerfile。Container 2 (Pipeline) 的 Dockerfile 待创建。在 Dockerfile 就绪前，可以在宿主机直接运行 pipeline:
+
 ```bash
 cd traffic_pipeline
+
+# Install dependencies
+pip install -r requirements.txt 2>/dev/null || pip install polars pandas requests tqdm pyarrow
+
+# Run pipeline directly (需要 Container 1 在 8080 端口运行)
+python3 main.py
 ```
 
-Build the docker image for docker 2.
-```bash
-docker build -t traffic-pipeline:latest .
-```
+旧版 `.bat` 文件 (`build_docker_2.bat`) 保留用于参考，但当前不可用。
 
 ## Usage
 

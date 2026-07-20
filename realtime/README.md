@@ -52,23 +52,30 @@ docker build -t valhalla-traffic .
 
 **构建时间**: 约 10 分钟（首次构建）
 
-### 2. 启动 Docker 容器
+### 2. 构建并启动 Docker 容器
 
 ```bash
-# 运行容器（端口转发 8002）
+# 构建镜像 (在 poc/ 或 valhalla_traffic_poc_/ 中)
+cd /home/admin/valhalla_traffic_poc_
+docker build -t valhalla-traffic .
+
+# 运行容器（端口转发 8002, 挂载 heartbeat 数据）
 docker run -p 8002:8002 \
-  -v /home/admin/heartbeat-2025-03-01.csv:/data/heartbeat.csv \
+  -v /home/admin/valhalla-project/tests/data/heartbeat/heartbeat-2025-03-01.csv:/data/heartbeat.csv \
   -it valhalla-traffic bash
 ```
 
 ### 3. 容器内启动服务
 
 ```bash
-# 在容器内
+# 在容器内先执行 build.sh 注入代码 (首次)
+cd /root/valhalla_traffic_realtime && ./build.sh
+
+# 启动 valhalla_service
 LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
 
 # 启动守护进程
-python3 /root/realtime_traffic_daemon.py \
+python3 /root/valhalla_traffic_realtime/scripts/realtime_traffic_daemon.py \
     --config /valhalla_tiles/valhalla.json \
     --heartbeat /data/heartbeat.csv \
     --interval 5 \

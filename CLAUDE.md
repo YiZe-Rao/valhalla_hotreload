@@ -4,34 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Valhalla Traffic Project — 基于 Valhalla 路由引擎的实时交通数据处理系统，包含3个活跃模块:
+Valhalla Traffic Project — 基于 Valhalla 路由引擎的实时交通数据处理系统，包含 2 个活跃模块:
 
 | 模块 | 用途 | 技术栈 |
 |------|------|--------|
-| `poc/` | Valhalla + Prime Server Docker 部署，含自定义 traffic 支持 | C++ (CMake), Python, Docker |
 | `pipeline/` | 5 阶段 ETA 交通数据处理流水线 | Python (Polars/Pandas), Docker |
 | `realtime/` | 实时交通热加载扩展（修改 Valhalla GraphReader） | C++, Python, Bash |
 
-`backup/` 是 `poc/` 的历史备份，日常开发不使用。
+辅助目录:
+| 目录 | 用途 |
+|------|------|
+| `tests/` | 测试脚本和数据 (heartbeat CSV, Python/Bash 测试) |
+| `scripts/` | 工具脚本 (从 heartbeat 生成 traffic.tar) |
+| `tiles/` | 地图瓦片测试工作目录 (空) |
+| `docs/` | 项目文档 (测试指南, 技术深读, 设计文档) |
+
+> **注意**: `poc/` (Valhalla + Prime Server Docker 部署) 和 `backup/` (历史备份) 已移除。如需 POC 完整环境，参考设计文档 `docs/superpowers/`。
 
 ## Build & Run
-
-### POC 模块 (poc/)
-
-```bash
-cd poc
-./build.sh                           # 完整构建: prime_server → valhalla → tiles → traffic
-./run_service.sh                     # 启动 valhalla_service (port 8002)
-./run_realtime_service.sh            # 启动 service + realtime_traffic_daemon.py
-```
-
-Docker 构建（替代 `build.sh`）:
-```bash
-cd poc
-docker build -t valhalla-traffic .
-docker run -p 8002:8002 -it valhalla-traffic bash
-# 容器内: LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1
-```
 
 ### Pipeline 模块 (pipeline/)
 
@@ -41,40 +31,53 @@ Pipeline 是双容器架构:
 
 ```bash
 cd pipeline
-# Container 1
+
+# Container 1: Valhalla map-matching service
 docker buildx build --platform linux/amd64 -t valhalla-local-test --load .
 docker run -d -p 8080:8080 --name valhalla-test valhalla-local-test
 docker cp valhalla-test:/custom_files/tiles/way_edges.txt ./traffic_pipeline/data/road_data/
 
-# Container 2
-cd traffic_pipeline
-docker build -t traffic-pipeline:latest .
-docker run -it --rm \
-  -v $(pwd)/data:/app/data \
-  -e VALHALLA_SERVICE_URL="http://host.docker.internal:8080" \
-  traffic-pipeline:latest
+# 注意: Pipeline Container 2 的 Dockerfile 在 pipeline/ 根目录
+# 其构建逻辑引用 traffic_pipeline/ 子目录
+
+# 测试 Valhalla API
+curl -s http://localhost:8080/status | python3 -m json.tool
+curl -s -X POST http://localhost:8080/route \
+    -H "Content-Type: application/json" \
+    -d '{"locations":[{"lat":22.2816,"lon":114.1585},{"lat":22.2988,"lon":114.1722}],"costing":"auto"}'
 ```
 
 ### Realtime 模块 (realtime/)
 
 ```bash
 cd realtime
+# 需要先有 valhalla_traffic_poc_ 基础项目在 /home/admin/ 下
 ./build.sh    # 注入热加载代码到 valhalla GraphReader，编译，部署 Python daemon
 ```
+
+热加载机制的核心文件:
+- `realtime/src/baldr/graphreader_hot_reload.{h,cc}` — GraphReader 热加载扩展 (shared_ptr 原子切换)
+- `realtime/src/baldr/realtime_traffic_updater.{h,cc}` — 实时速度更新器 (时间衰减加权平均 + 双缓冲)
+- `realtime/scripts/realtime_traffic_daemon.py` — Python 守护进程 (heartbeat CSV → edge 映射 → tar 生成)
 
 ### 运行测试
 
 ```bash
-# 解析 heartbeat 数据统计
+# 离线测试 (无需 Docker) — 全部可用 ✓
 python3 tests/scripts/test_heartbeat_parse.py tests/data/heartbeat/heartbeat-2025-03-01.csv
+python3 tests/scripts/heartbeat_to_edge_csv.py --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv --max-records 5000 --offline
+python3 tests/scripts/test_realtime_traffic_update.py --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv --output /tmp/test_traffic.tar --sample 500
 
-# 生成 traffic.tar 测试
-python3 tests/scripts/test_realtime_traffic_update.py \
+# Docker 测试 — 需要运行中的 valhalla_service
+bash tests/scripts/valhalla_hotreload_test.sh        # 8 步骤完整验证
+bash tests/scripts/validate_per_edge_injection.sh     # 离线 + 在线 4 阶段验证
+
+# 在线转换 (需要 valhalla_service 在 8002 端口运行)
+python3 tests/scripts/heartbeat_to_edge_csv.py \
     --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv \
-    --output /tmp/test_traffic.tar --sample 1000
-
-# 完整热重载测试 (需要运行中的 valhalla_service)
-bash tests/scripts/valhalla_hotreload_test.sh
+    --max-records 500 \
+    --valhalla-url http://localhost:8002 \
+    --output /tmp/edge_speeds.csv
 ```
 
 ## Architecture
@@ -89,16 +92,6 @@ Heartbeat GPS CSV → [Data Clean] → [Map Matching] → [Speed Calc] → [Empt
                                                                               valhalla_service (热加载)
 ```
 
-### POC 模块关键架构
-
-自定义 traffic 功能通过 **文件覆写** 方式注入 Valhalla:
-
-1. `valhalla_code_overwrites/CMakeLists.txt` — 根 CMakeLists，将 `valhalla_traffic_demo_utils` 加入 `valhalla_data_tools`
-2. `valhalla_code_overwrites/src/CMakeLists.txt` — 添加 `microtar` 库依赖到 valhalla target
-3. `valhalla_code_overwrites/src/mjolnir/valhalla_traffic_demo_utils.cc` — 核心 custom utility，使用 Valhalla 内部 `baldr::GraphReader` / `mjolnir::GraphTileBuilder` 读写 traffic 数据
-
-`build.sh` 将这些文件复制到 valhalla 源码目录后编译。
-
 ### Pipeline 5 阶段
 
 | 阶段 | 类 | 说明 |
@@ -110,9 +103,9 @@ Heartbeat GPS CSV → [Data Clean] → [Map Matching] → [Speed Calc] → [Empt
 | Stage 5 | `SpeedProfileGenerationStage` | 生成 Valhalla historical traffic 格式输出 |
 
 核心类:
-- `PipelineOrchestrator` (`orchestrator.py`) — 协调所有阶段执行
-- `PipelineConfig` / `DataNode` / `StageResult` (`pipeline/base.py`) — 配置和数据流抽象
-- `ValhallaClient` (`clients/valhalla_client.py`) — 异步 HTTP 客户端调用 Valhalla API
+- `PipelineOrchestrator` (`pipeline/traffic_pipeline/traffic_pipeline/orchestrator.py`) — 协调所有阶段执行
+- `PipelineConfig` / `DataNode` / `StageResult` (`pipeline/traffic_pipeline/traffic_pipeline/pipeline/base.py`) — 配置和数据流抽象
+- `ValhallaClient` (`pipeline/traffic_pipeline/traffic_pipeline/clients/valhalla_client.py`) — 异步 HTTP 客户端调用 Valhalla API
 
 ### Realtime 热加载机制
 
@@ -128,6 +121,8 @@ realtime_traffic_daemon.py
 ```
 
 Valhalla C++ 端 (`realtime/src/baldr/`): 修改 `GraphReader` 添加 `HotReloadTrafficArchive()` 方法，用 mutex 保护 `tile_extract_` 的原子替换。
+
+**关键**: `valhalla_live_traffic --update-edges` 是离线工具，修改 traffic.tar 后必须触发热加载 (`POST /admin/reload_traffic`) 或重启服务，否则 `/locate` 返回 `live=none`。详见 `docs/TECHNICAL_DEEP_DIVE.md` §8.
 
 ## Traffic 数据格式
 
@@ -147,40 +142,37 @@ Valhalla C++ 端 (`realtime/src/baldr/`): 修改 `GraphReader` 添加 `HotReload
 id,f0_,location,bearing,speed,device_time,server_time
 3ae38ba2...,v6y5Uns...,POINT(114.198600738 22.343012951),2.66,4.01,2025-02-28 16:00:00,...
 ```
-测试数据: `tests/data/heartbeat/heartbeat-2025-03-01.csv` (香港区域)
+测试数据: `tests/data/heartbeat/heartbeat-2025-03-01.csv` (香港区域, 450MB, 2.8M 行, CRLF 换行)
 
-## 关键 Valhalla 工具
+## 关键 Valhalla 工具 (需在 Docker 容器内使用)
 
 | 工具 | 用途 |
 |------|------|
 | `valhalla_build_tiles` | 从 OSM .pbf 生成路由 tiles |
 | `valhalla_ways_to_edges` | 生成 OSM way ID → Valhalla edge ID 映射 (`way_edges.txt`) |
 | `valhalla_add_predicted_traffic` | 将 predicted traffic CSV 嵌入 tiles |
-| `valhalla_traffic_demo_utils` | 自定义工具: 生成 live traffic tar, 查询 traffic 目录等 |
-| `valhalla_service` | HTTP 路由服务 |
+| `valhalla_live_traffic` | 按边实时速度注入 (新增工具, 替代旧的 `valhalla_traffic_demo_utils`) |
 
-## Valhalla API Endpoints (POC: port 8002, Pipeline: port 8080)
+## Valhalla API Endpoints
 
-- `/route` — 时间相关路由 (支持 `date_time` 参数启用 traffic)
-- `/trace_attributes` — Map matching，返回 edge IDs 和 matched points
-- `/locate` — 点匹配到最近道路，返回 `predicted_speeds` 和 `live_speed`
-- `/isochrone` — 可达性区域 (支持 traffic)
-- `/admin/reload_traffic` — 热加载 traffic.tar (realtime 模块添加的扩展端点)
+| 端点 | 用途 | 关键参数 |
+|------|------|----------|
+| `/route` | 时间相关路由 | `date_time` 参数启用 traffic |
+| `/trace_attributes` | Map matching | GPS → edge IDs, matched points |
+| `/locate` | 点→道路匹配 | `verbose=true` 返回 `predicted_speeds` 和 `live_speed` |
+| `/isochrone` | 可达性区域 | 支持 traffic |
+| `/admin/reload_traffic` | 热加载 traffic.tar | realtime 模块添加的扩展端点 |
 
 ## 路径注意事项
 
-- `valhalla.json` 中的路径在 Docker 容器内和物理机上不同
+- 容器内路径与宿主机路径不同:
   - Docker 容器: `/valhalla_tiles/`, `/custom_files/`
-  - 物理机: `/home/admin/valhalla_traffic_poc_/valhalla_tiles/`
-- `poc/valhalla/` 和 `poc/prime_server/` 各有自己的 `.git`，是独立 git 仓库
-- `valhalla-project/` 本身不是 git 仓库
-- 大文件 (`.osm.pbf`, `shapefile.zip` 等) 在 `.gitignore` 中排除
+  - 宿主机: 因环境而异，常见 `/home/admin/valhalla_traffic_poc_/valhalla_tiles/`
+- `pipeline/custom_files/valhalla.json` 中 `traffic_extract` 默认为 `/custom_files/traffic.tar`
+- `realtime/build.sh` 依赖 `/home/admin/valhalla_traffic_poc_/` 存在
 
 ## Memory Context
 
-相关 memory 文件位于 `~/.claude/projects/-home-admin/memory/`:
-- `valhalla_realtime_project.md` — GCP 部署方案
-- `valhalla_eta_pipeline_structure.md` — 测试用例结构和数据格式
-- `valhalla_docs.md` — Valhalla 官方文档地址
-- `heartbeat_data_format.md` — heartbeat CSV 格式详细说明
-- `validated/docker_build_fixes.md` — 已验证的 Docker 构建修复方案
+相关 design docs 位于 `docs/superpowers/`:
+- `specs/2026-06-28-live-traffic-per-edge-injection-design.md` — Per-edge 注入设计
+- `plans/2026-06-28-live-traffic-per-edge-injection.md` — 实施计划

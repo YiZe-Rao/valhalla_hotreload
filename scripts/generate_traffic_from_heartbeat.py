@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-使用 heartbeat 真实数据生成 traffic.tar
+使用 heartbeat 真实数据调用 valhalla_live_traffic 生成 traffic.tar
+
+运行环境: Docker 容器内 (需要 valhalla_live_traffic)
+替代旧脚本中已废弃的 valhalla_traffic_demo_utils 调用
 """
 
 import csv
 import subprocess
-import tempfile
 import os
+import sys
 
 HEARTBEAT_FILE = "/app/heartbeat-2025-03-01.csv"
 CONFIG_FILE = "/valhalla_tiles/valhalla.json"
 TRAFFIC_TAR = "/valhalla_tiles/traffic.tar"
+
 
 def parse_heartbeat(filepath, max_records=1000):
     """解析 heartbeat CSV 文件"""
@@ -48,36 +52,31 @@ def parse_heartbeat(filepath, max_records=1000):
                 continue
     return records
 
-def gps_to_tile_id(lat, lon):
-    """简化：将 GPS 映射到 tile ID"""
-    # 使用与 valhalla_traffic_demo_utils 相同的逻辑
-    # tile_id 格式：level/tile/id
-    # 这里使用简化的映射
-    tile_id = int(abs(lat * 10000) + abs(lon * 10000)) % 1000000
-    return f"2/647736/0"  # 使用测试 tile
 
 def main():
-    print("解析 heartbeat 数据...")
-    records = parse_heartbeat(HEARTBEAT_FILE, max_records=500)
+    heartbeat_file = sys.argv[1] if len(sys.argv) > 1 else HEARTBEAT_FILE
+    max_records = int(sys.argv[2]) if len(sys.argv) > 2 else 500
+
+    print(f"解析 heartbeat 数据: {heartbeat_file}")
+    records = parse_heartbeat(heartbeat_file, max_records=max_records)
     print(f"  有效记录数：{len(records)}")
 
     if not records:
         print("  没有有效记录")
-        return
+        return 1
 
     # 计算平均速度
     avg_speed = sum(r['speed'] for r in records) / len(records)
-    print(f"  平均速度：{avg_speed:.1f} km/h")
-
-    # 使用 valhalla_traffic_demo_utils 生成 traffic.tar
-    # 使用平均速度
     speed = int(avg_speed)
     import time
     timestamp = int(time.time())
 
-    print(f"\n生成 traffic.tar (平均速度：{speed} km/h)...")
+    print(f"  平均速度：{avg_speed:.1f} km/h")
+    print(f"\n生成 traffic.tar (速度：{speed} km/h)...")
+
+    # 使用 valhalla_live_traffic (替代已废弃的 valhalla_traffic_demo_utils)
     cmd = [
-        "valhalla_traffic_demo_utils",
+        "valhalla_live_traffic",
         "--config", CONFIG_FILE,
         "--generate-live-traffic",
         f"2/647736/0,{speed},{timestamp}"
@@ -86,9 +85,14 @@ def main():
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print("  traffic.tar 生成成功")
-        print(f"  输出：{result.stdout.strip()}")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
     else:
         print(f"  生成失败：{result.stderr}")
+        return 1
+
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
