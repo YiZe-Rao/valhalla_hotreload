@@ -119,7 +119,8 @@ python3 tests/scripts/test_realtime_traffic_update.py \
 ### 热重载
 
 - `shared_ptr<midgard::tar>` 原子赋值 → 新请求用新数据，旧请求继续用旧数据
-- `valhalla_live_traffic --update-edges` 是离线工具 → 修改后必须重启或调用 `/admin/reload_traffic`
+- `valhalla_live_traffic --update-edges` 是离线工具 → 修改后**重启 valhalla_service** 使新 traffic.tar 生效
+- `/admin/reload_traffic` HTTP handler 需要编译到 valhalla_service 中才能使用（`HotReloadTrafficArchive()` 函数已存在，但 prime_server action 未注册）
 
 详见 `docs/TECHNICAL_DEEP_DIVE.md`。
 

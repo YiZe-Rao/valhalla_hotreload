@@ -474,14 +474,17 @@ docker exec valhalla-hotreload valhalla_live_traffic \
 ### 6c. 触发热加载 (必须执行!)
 
 ```bash
-# 方法 1 (推荐): 调用热加载 API
-curl -s -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 方法 1 (推荐, 当前可用): 重启服务
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
 
-# 方法 2 (备选): 重启服务
-# docker exec valhalla-hotreload bash -c "pkill valhalla_service || true"
-# sleep 2
+# 方法 2 (需编译 HTTP handler 后可用): 调用热加载 API
+# curl -s -X POST http://localhost:8002/admin/reload_traffic \
+#     -H "Content-Type: application/json" \
+#     -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 注意: 当前镜像中此端点返回 404, 因为 HTTP handler 未注册到 prime_server
+# 编译补丁指南: realtime/src/baldr/README.md
 # docker exec valhalla-hotreload bash -c \
 #     "LD_LIBRARY_PATH=/usr/local/lib nohup valhalla_service /valhalla_tiles/valhalla.json 1 > /tmp/valhalla.log 2>&1 &"
 # sleep 10
@@ -516,10 +519,9 @@ docker exec valhalla-hotreload valhalla_live_traffic \
     --config /valhalla_tiles/valhalla.json \
     --set-edge-speed "0/3381/0,15,45,6"
 
-# 步骤 3: 触发热加载 (必须!)
-curl -s -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 步骤 3: 重启服务使新 traffic.tar 生效 (必须!)
+# /admin/reload_traffic HTTP handler 未编译，重启是最可靠的方案
+docker exec valhalla-hotreload bash -c "pkill valhalla_service; sleep 1; LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &"
 
 # 步骤 4: 再次查询同一坐标，验证 live_speed 已更新
 curl -s -X POST http://localhost:8002/locate \
@@ -616,13 +618,17 @@ curl /locate                                                        │
 **解决方法**:
 
 ```bash
-# 方法 A (推荐): 热加载 API
-curl -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
-# 期望响应: {"success": true, "message": "Traffic archive hot-reloaded successfully"}
+# 重启 valhalla_service 使新的 traffic.tar 生效
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
 
-# 如果热加载 API 不可用 (返回 404 或 "Unknown action"):
+# /admin/reload_traffic 热加载 API（需编译 HTTP handler，当前不可用）:
+# curl -X POST http://localhost:8002/admin/reload_traffic \
+#     -H "Content-Type: application/json" \
+#     -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+
+# 如果上述重启方案也有问题:
 # 说明此 Valhalla 版本未编译实时热加载扩展 (realtime/ 模块)。
 # 使用方法 B:
 
@@ -670,11 +676,15 @@ for e in d[0]['edges'][:3]:
 valhalla_live_traffic --config /valhalla_tiles/valhalla.json \
     --set-edge-speed "0/3381/0,15,45,6"    # ← 从步骤 1 得到的精确值!
 
-# 3. 触发热加载或重启
-curl -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 3. 重启服务使新 traffic.tar 生效
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
 
+# 备选: /admin/reload_traffic API (需编译 HTTP handler，参见 realtime/src/baldr/README.md)
+# curl -X POST http://localhost:8002/admin/reload_traffic \
+#     -H "Content-Type: application/json" \
+#     -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
 # 4. 用同样的 GPS 坐标再次查询 (必须用和步骤 1 相同的坐标!)
 curl -s -X POST http://localhost:8002/locate \
     -H "Content-Type: application/json" \
@@ -776,12 +786,17 @@ echo "[3] 注入速度 $SPEED_KPH km/h 到该 edge..."
 valhalla_live_traffic --config "$CONFIG" \
     --set-edge-speed "$LEVEL/$TILE_ID/0,$EDGE_IDX,$SPEED_KPH,$CONGESTION"
 
-# 4. 触发热加载
-echo "[4] 触发热加载..."
-RELOAD_RESULT=$(curl -s -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d "{\"traffic_path\": \"$TRAFFIC_PATH\"}")
-echo "    $RELOAD_RESULT"
+# 4. 重启服务使新 traffic.tar 生效
+echo "[4] 重启 valhalla_service..."
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service "$CONFIG" 1 &
+RELOAD_RESULT='{"success":true,"message":"restarted"}'
+
+# 备选: 热加载 API（需编译 HTTP handler）
+# RELOAD_RESULT=$(curl -s -X POST http://localhost:8002/admin/reload_traffic \
+#     -H "Content-Type: application/json" \
+#     -d "{\"traffic_path\": \"$TRAFFIC_PATH\"}")
 
 if echo "$RELOAD_RESULT" | grep -q "error\|Unknown"; then
     echo "    ✗ 热加载 API 不可用, 需要重启服务!"
@@ -961,7 +976,7 @@ docker stop valhalla-test && docker rm valhalla-test
 | `/trace_attributes` | POST | Map matching (GPS → edges) | Pipeline Stage 2 使用 |
 | `/locate` | POST | 点匹配到最近道路 edge | `verbose=true` 获取 live_speed |
 | `/isochrone` | POST | 可达性区域 | 支持 traffic 参数 |
-| `/admin/reload_traffic` | POST | 热加载 traffic.tar | 见 Section 5 |
+| `/admin/reload_traffic` | POST | 热加载 traffic.tar | ⚠️ 需编译 HTTP handler（见 `realtime/src/baldr/README.md`） |
 
 ## 关键约束和边界条件
 
@@ -994,7 +1009,7 @@ docker stop valhalla-test && docker rm valhalla-test
 - **容器**: `valhalla-live-test` (image: `valhalla-live-traffic:v1`)
 - **Valhalla**: v3.1.4, Ubuntu 20.04
 - **Graph tiles**: 20 个 (.gph), 香港区域
-- **热加载 API**: `/admin/reload_traffic` → **404 不可用** (未编译热加载扩展)
+- **热加载 API**: `/admin/reload_traffic` → **404 不可用** (`HotReloadTrafficArchive()` 函数已编译但 HTTP handler 未注册)
 - **traffic.tar**: 3.2MB, 初始仅含 tile `2/647736`
 
 ### 验证过程 (2026-07-20)

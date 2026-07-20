@@ -299,10 +299,20 @@ fi
 
 # 4. 测试 HTTP API (如果服务正在运行)
 echo "Testing /admin/reload_traffic API..."
-curl -s -X POST http://localhost:8002/admin/reload_traffic \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8002/admin/reload_traffic \
     -H "Content-Type: application/json" \
     -d "{\"traffic_path\": \"$TRAFFIC_DIR/traffic_standby.tar\"}" \
-    || echo "Service not running or API not available"
+    2>/dev/null || echo "000")
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "  /admin/reload_traffic: OK (200)"
+elif [ "$HTTP_CODE" = "404" ]; then
+    echo "  /admin/reload_traffic: 404 — HTTP handler 未编译。使用重启使新 traffic.tar 生效:"
+    echo "    pkill valhalla_service && LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &"
+elif [ "$HTTP_CODE" = "000" ]; then
+    echo "  Service not running or not reachable"
+else
+    echo "  Unexpected response: HTTP $HTTP_CODE"
+fi
 
 echo ""
 echo "Test complete!"

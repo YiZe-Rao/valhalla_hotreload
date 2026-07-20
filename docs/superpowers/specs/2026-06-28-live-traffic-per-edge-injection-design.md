@@ -166,10 +166,13 @@ cd poc && ./build.sh
 valhalla_live_traffic --config valhalla_tiles/valhalla.json \
     --update-edges /tmp/edge_speeds.csv
 
-# 4. 触发热加载（或重启服务）
-curl -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path":"/valhalla_tiles/traffic.tar"}'
+# 4. 重启 valhalla_service 使新数据生效
+# (或编译 HTTP handler 后使用 /admin/reload_traffic 端点)
+pkill valhalla_service; sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
+# curl -X POST http://localhost:8002/admin/reload_traffic \
+#     -H "Content-Type: application/json" \
+#     -d '{"traffic_path":"/valhalla_tiles/traffic.tar"}'
 
 # 5. 验证
 curl http://localhost:8002/locate \

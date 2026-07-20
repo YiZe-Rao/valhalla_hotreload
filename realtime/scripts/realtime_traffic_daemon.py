@@ -107,6 +107,9 @@ class RealtimeTrafficUpdater:
         # 边速度缓存：edge_index -> [(speed, timestamp), ...]
         self.edge_speeds: Dict[int, List[Tuple[float, float]]] = defaultdict(list)
 
+        # hot-reload endpoint 状态（避免重复告警）
+        self._hot_reload_available: Optional[bool] = None
+
         # 统计信息
         self.stats = {
             'total_records': 0,
@@ -346,7 +349,13 @@ class RealtimeTrafficUpdater:
             return False
 
     def _notify_hot_reload(self) -> bool:
-        """通知 valhalla_service 热加载 traffic.tar"""
+        """
+        通知 valhalla_service 热加载 traffic.tar
+
+        注意: /admin/reload_traffic 端点需要编译 HTTP handler 到 valhalla_service 中。
+        当前大部分 Docker 镜像未包含此 handler，返回 404。
+        此时需重启 valhalla_service 使新 traffic.tar 生效。
+        """
         try:
             resp = requests.post(
                 'http://localhost:8002/admin/reload_traffic',
@@ -355,10 +364,25 @@ class RealtimeTrafficUpdater:
             )
             if resp.status_code == 200:
                 logger.info("valhalla_service acknowledged hot reload")
+                self._hot_reload_available = True
                 return True
+            elif resp.status_code == 404:
+                if self._hot_reload_available is None:
+                    logger.warning(
+                        "/admin/reload_traffic 返回 404 — HTTP handler 未编译到 valhalla_service 中。\n"
+                        "    traffic.tar 已更新，但需重启 valhalla_service 使新数据生效:\n"
+                        "    pkill valhalla_service && LD_LIBRARY_PATH=/usr/local/lib "
+                        "valhalla_service /valhalla_tiles/valhalla.json 1 &"
+                    )
+                    self._hot_reload_available = False
+                return False
+            else:
+                logger.warning(f"Hot reload returned unexpected status: {resp.status_code}")
+                return False
         except requests.exceptions.RequestException:
-            logger.debug("valhalla_service not reachable, continuing anyway")
-        return False
+            if self._hot_reload_available is None:
+                logger.debug("valhalla_service not reachable, continuing anyway")
+            return False
 
     def get_stats(self) -> dict:
         """获取统计信息"""

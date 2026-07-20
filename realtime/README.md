@@ -82,20 +82,32 @@ python3 /root/valhalla_traffic_realtime/scripts/realtime_traffic_daemon.py \
     --window 60
 ```
 
-### 4. 验证热加载
+### 4. 使新 traffic.tar 生效
+
+`valhalla_live_traffic --update-edges` 是离线工具，修改 traffic.tar 后 valhalla_service **不会自动感知变化**。
+
+**当前验证方法**: 修改 traffic.tar 后重启 valhalla_service：
 
 ```bash
-# 在容器内查看日志
-tail -f /valhalla_tiles/valhalla.log
+# 修改 traffic.tar（例如注入新的速度）
+valhalla_live_traffic --config /valhalla_tiles/valhalla.json \
+    --set-edge-speed "1/40614/0,10" --update-edges /path/to/edges.csv
 
-# 检查 traffic 文件
-ls -la /valhalla_tiles/traffic_*.tar
+# 重启服务使新 traffic.tar 生效
+pkill valhalla_service
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
 
-# 测试 API
-curl -X POST http://localhost:8002/admin/reload_traffic \
+# 验证速度已生效
+curl -s -X POST http://localhost:8002/locate \
     -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic_standby.tar"}'
+    -d '{"locations":[{"lat":22.2816,"lon":114.1585}],"verbose":true}' \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['edges'][0].get('overall_speed','N/A'))"
 ```
+
+**`/admin/reload_traffic` 端点**: 当前未编译到 valhalla_service HTTP handler 中。
+- `HotReloadTrafficArchive()` C++ 函数已存在于 `graphreader.cc`（第 21 行）
+- 但 prime_server action 未注册 → 返回 HTTP 404
+- 启用需要: proto 枚举 + loki_worker dispatch + config 注册
 
 ## 配置文件
 
@@ -164,9 +176,12 @@ TrafficSpeed[] (8 字节/边)
 
 ## API 端点
 
-### POST /admin/reload_traffic
+### POST /admin/reload_traffic (需编译启用)
 
-触发热加载 traffic.tar
+> ⚠️ **状态**: 此端点当前未编译到 valhalla_service 中，调用返回 HTTP 404。
+> `HotReloadTrafficArchive()` 函数已存在，但 HTTP handler 未注册。详见 [故障排查](#热加载-api-返回-404)。
+
+启用后，此端点触发 traffic.tar 热加载（无需重启服务）:
 
 **请求体:**
 ```json
@@ -175,14 +190,19 @@ TrafficSpeed[] (8 字节/边)
 }
 ```
 
-**响应:**
+**预期响应:**
 ```json
 {
     "success": true,
     "message": "Traffic archive hot-reloaded successfully",
-    "tiles_loaded": 123
+    "tiles_loaded": 1
 }
 ```
+
+**启用步骤** (需重新编译 valhalla_service):
+1. `valhalla/proto/options.proto` — 在 Action 枚举中添加 `reload_traffic = 13`
+2. `valhalla/src/loki/worker.cc` — 注册 action + 实现 handler 调用 `reader->HotReloadTrafficArchive()`
+3. `valhulla_tiles/valhalla.json` — 在 `loki.actions` 中添加 `"reload_traffic"`
 
 ## 性能指标
 
@@ -206,6 +226,36 @@ docker logs <container_id> 2>&1 | tail -50
 docker exec -it <container_id> bash
 tail -f /valhalla_tiles/valhalla.log
 ```
+
+### 热加载 API 返回 404
+
+`POST /admin/reload_traffic` 返回:
+```json
+{"error_code":106,"error":"Try any of:'/locate' '/route' ...","status_code":404,"status":"Not Found"}
+```
+
+**根因**: `HotReloadTrafficArchive()` C++ 函数已存在于 `graphreader.cc`（可通过 `strings valhalla_service | grep HotReload` 确认），但 HTTP handler 未注册到 prime_server action 分发链中。
+
+**诊断方法**:
+```bash
+# 1. 确认 C++ 函数存在
+strings /usr/local/bin/valhalla_service | grep "HotReload"
+
+# 2. 查看当前注册的 actions（options.proto 枚举 + valhalla.json loki.actions）
+cat /valhalla_tiles/valhalla.json | grep -A5 '"loki"'
+
+# 3. 查看容器日志确认错误
+tail -20 /tmp/valhalla*.log
+```
+
+**解决方案**: 修改 traffic.tar 后**重启 valhalla_service**使新数据生效:
+```bash
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
+```
+
+如需启用免重启热加载，参见 `docs/TECHNICAL_DEEP_DIVE.md` §8 的完整编译修改步骤。
 
 ### 热加载失败
 

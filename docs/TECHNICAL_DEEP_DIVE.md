@@ -289,7 +289,7 @@ Python Daemon (realtime_traffic_daemon.py)
   ├── 5. 原子 rename: next.tar.new → standby.tar
   │    └── filesystem::rename() (原子操作, 同文件系统)
   │
-  └── 6. 通知 valhalla_service: POST /admin/reload_traffic
+  └── 6. 重启 valhalla_service 使新 traffic.tar 生效（/admin/reload_traffic 需编译 HTTP handler）
        │
        ▼
 C++ GraphReader (graphreader_hot_reload.cc)
@@ -396,8 +396,8 @@ valhalla_live_traffic --update-edges:
 
 **所以关键规则是**: `valhalla_live_traffic --update-edges` (离线工具) 修改文件后，必须通过以下方式之一让服务感知:
 
-1. `POST /admin/reload_traffic` → 触发 `HotReloadTrafficArchive()` (如果已编译)
-2. 重启 valhalla_service → 重新 mmap traffic.tar
+1. **重启 valhalla_service** → 重新 mmap traffic.tar（当前已验证可用）
+2. `POST /admin/reload_traffic` → 触发 `HotReloadTrafficArchive()`（⚠️ HTTP handler 需编译，当前大部分镜像未包含）
 3. 重启 Docker 容器
 
 ### 4.4 检测热加载是否可用
@@ -415,9 +415,16 @@ curl -s -X POST http://localhost:8002/admin/reload_traffic \
 
 ```bash
 # 方法 2: 检查 binary 是否包含热加载符号
-strings /usr/local/bin/valhalla_service | grep -i "HotReload\|reload_traffic"
-# 有输出 → 热加载已编译 ✓
-# 无输出 → 热加载未编译, 需要重启服务
+strings /usr/local/bin/valhalla_service | grep -i "HotReload"
+# 有输出 → HotReloadTrafficArchive() 函数已编译，但 HTTP handler 可能未注册
+# 无输出 → 函数也未编译，确认需要重启服务
+
+# 方法 3: 检查 HTTP handler 是否已注册（最准确）
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8002/admin/reload_traffic \
+    -H "Content-Type: application/json" \
+    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 返回 200 → handler 已注册 ✓
+# 返回 404 → handler 未注册，需重启服务或编译补丁
 ```
 
 ### 4.5 双缓冲文件命名
@@ -800,6 +807,22 @@ curl .../locate -d '{"locations":[{"lat":22.343,"lon":114.199}],"verbose":true}'
 
 `valhalla.json` 中 `mjolnir.traffic_extract` 的路径 ≠ `valhalla_live_traffic` 写入的文件路径。
 
+**根因 #4: `--generate-live-traffic` 使用 `TS` 令牌 crash**
+
+此版本 `valhalla_live_traffic` (v3.1.4) 在解析 `TS` 时间戳令牌时抛出 `stoull` 异常:
+```
+terminate called after throwing an instance of 'std::invalid_argument'
+  what():  stoull
+```
+**解决**: 使用数字 Unix 时间戳替代 `TS`:
+```bash
+# ✗ 错误（crash）
+valhalla_live_traffic --generate-live-traffic "2/647736/0,44,TS"
+
+# ✓ 正确
+valhalla_live_traffic --generate-live-traffic "2/647736/0,44,$(date +%s)"
+```
+
 ```bash
 python3 -c "import json; print(json.load(open('valhalla.json'))['mjolnir']['traffic_extract'])"
 # 必须与工具输出的 "Updated N edges in XXX" 中的 XXX 一致
@@ -810,7 +833,7 @@ python3 -c "import json; print(json.load(open('valhalla.json'))['mjolnir']['traf
 ```
 1. /locate 查询目标 GPS → 拿到 {level, tile_id, edge_index}
 2. --set-edge-speed 用步骤 1 的精确值注入
-3. POST /admin/reload_traffic (或重启服务)
+3. 重启 valhalla_service (或编译 HTTP handler 后 POST /admin/reload_traffic)
 4. /locate 用步骤 1 相同的 GPS 坐标再次查询
 5. overall_speed 应 = 注入的 speed_kph × 2
 ```

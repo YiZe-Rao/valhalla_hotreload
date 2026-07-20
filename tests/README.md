@@ -73,10 +73,12 @@ bash tests/scripts/validate_per_edge_injection.sh
 # 1. 注入速度
 valhalla_live_traffic --config /valhalla_tiles/valhalla.json --update-edges /tmp/edge_speeds.csv
 
-# 2. 触发热加载 (必须!)
-curl -X POST http://localhost:8002/admin/reload_traffic \
-    -H "Content-Type: application/json" \
-    -d '{"traffic_path": "/valhalla_tiles/traffic.tar"}'
+# 2. 使新数据生效 — 重启服务 (当前 /admin/reload_traffic HTTP handler 未编译)
+pkill valhalla_service
+sleep 1
+LD_LIBRARY_PATH=/usr/local/lib valhalla_service /valhalla_tiles/valhalla.json 1 &
+
+# 如需免重启热加载，参见 realtime/src/baldr/README.md 补丁指南
 
 # 3. 验证
 curl -s -X POST http://localhost:8002/locate \
