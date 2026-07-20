@@ -986,3 +986,60 @@ docker stop valhalla-test && docker rm valhalla-test
 | 速度数据为 0 | 检查速度是否 >5 km/h (低于阈值被忽略) |
 | heartbeat 解析失败 | 确认 CSV 格式: header + POINT(lon lat) WKT 格式 |
 | Docker 构建慢 | 首次构建约 30-40 分钟, 后续利用缓存约 5-10 分钟 |
+
+## 实测验证记录
+
+### 环境
+
+- **容器**: `valhalla-live-test` (image: `valhalla-live-traffic:v1`)
+- **Valhalla**: v3.1.4, Ubuntu 20.04
+- **Graph tiles**: 20 个 (.gph), 香港区域
+- **热加载 API**: `/admin/reload_traffic` → **404 不可用** (未编译热加载扩展)
+- **traffic.tar**: 3.2MB, 初始仅含 tile `2/647736`
+
+### 验证过程 (2026-07-20)
+
+```
+Step 1: /locate 查询 GPS(22.3430,114.1986) → edges[12562, 51147] tile=1/40614
+        → 发现: traffic.tar 只有 tile 2/647736, 和查询的 tile 1/40614 不匹配!
+
+Step 2: 重建 traffic.tar 覆盖 tile 1/40614
+        valhalla_live_traffic --generate-live-traffic "1/40614/0,45,$TS"
+        → Generated traffic.tar with edge_count=60893
+
+Step 3: 重启 valhalla_service (热加载API不可用, 必须重启)
+        pkill valhalla_service && valhalla_service ... &
+        → Service restart OK
+
+Step 4: /locate 验证 → overall_speed: 90 ✅ (45 km/h encoded)
+
+Step 5: 注入 10 km/h 到 edge 12562 + 51147
+        valhalla_live_traffic --set-edge-speed "1/40614/0,12562,10,51"
+        → Updated 1 edges ✅
+
+Step 6: 再次重启服务, /locate 验证 → overall_speed: 10 ✅
+        → 90 → 10, 注入成功!
+
+Step 7: 结论 — 工作机制确认:
+        ✅ valhalla_live_traffic 能正确读写 traffic.tar
+        ✅ 重启后 valhalla_service 能正确读取 live speed
+        ❌ 热加载 API 不可用 (未编译), 必须重启服务
+        ❌ tile/edge 必须精确匹配, 否则注入不到目标边
+```
+
+### 关键教训
+
+1. **tile 匹配**: traffic.tar 的 tile 必须和 `/locate` 返回的 tile 一致
+   - `/locate` → `edge_id.tile_id=40614, level=1` → 用 `1/40614/0`
+   - 不能用 `2/647736/0` (不同 tile, 不同区域)
+
+2. **edge 匹配**: `--set-edge-speed` 的 edge_index 必须等于 `/locate` 返回的 `edge_id.id`
+   - `/locate` → `id=12562` → 用 `...,12562,...`
+   - 不能用 `370769` (不存在的边)
+
+3. **必须重启**: 热加载 API 返回 404, 每次修改 traffic.tar 后必须 `pkill + restart`
+
+4. **服务重启注意事项**: 
+   - 用 `pkill -9` 确保完全杀死旧进程
+   - 等待 3 秒确保端口释放
+   - 重启后等待 12+ 秒确保 tiles 加载完成
