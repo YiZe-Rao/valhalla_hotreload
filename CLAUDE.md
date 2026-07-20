@@ -4,94 +4,175 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository demonstrates how to add traffic support to the Valhalla routing engine. It includes:
+Valhalla Traffic Project — 基于 Valhalla 路由引擎的实时交通数据处理系统，包含 2 个活跃模块:
 
-- **valhalla/** - The Valhalla routing engine (submodule)
-- **prime_server/** - HTTP server dependency for Valhalla services
-- **include/valhalla_hotreload/** - Public headers (`live_traffic_utils.h`)
-- **src/** - Source code (`live_traffic_utils.cc`, `valhalla_live_traffic.cc`)
-- **cmake/** - CMake overlay files for patching into Valhalla's build system
-- **scripts/** - Build and utility scripts
-- **docker/** - Docker build files
-- **docs/** - Comprehensive documentation
+| 模块 | 用途 | 技术栈 |
+|------|------|--------|
+| `pipeline/` | 5 阶段 ETA 交通数据处理流水线 | Python (Polars/Pandas), Docker |
+| `realtime/` | 实时交通热加载扩展（修改 Valhalla GraphReader） | C++, Python, Bash |
 
-## Build Commands
+辅助目录:
+| 目录 | 用途 |
+|------|------|
+| `tests/` | 测试脚本和数据 (heartbeat CSV, Python/Bash 测试) |
+| `scripts/` | 工具脚本 (从 heartbeat 生成 traffic.tar) |
+| `tiles/` | 地图瓦片测试工作目录 (空) |
+| `docs/` | 项目文档 (测试指南, 技术深读, 设计文档) |
 
-### Full build via build script
+> **注意**: `poc/` (Valhalla + Prime Server Docker 部署) 和 `backup/` (历史备份) 已移除。如需 POC 完整环境，参考设计文档 `docs/superpowers/`。
+
+## Build & Run
+
+### Pipeline 模块 (pipeline/)
+
+Pipeline 是双容器架构:
+- **Container 1 (Valhalla)**: 在 port 8080 运行 `trace_attributes` map-matching 服务
+- **Container 2 (Pipeline)**: 消费 Container 1 的 API，执行 5 阶段流水线
+
 ```bash
-bash scripts/build.sh
+cd pipeline
+
+# Container 1: Valhalla map-matching service
+docker buildx build --platform linux/amd64 -t valhalla-local-test --load .
+docker run -d -p 8080:8080 --name valhalla-test valhalla-local-test
+docker cp valhalla-test:/custom_files/tiles/way_edges.txt ./traffic_pipeline/data/road_data/
+
+# 注意: Pipeline Container 2 的 Dockerfile 在 pipeline/ 根目录
+# 其构建逻辑引用 traffic_pipeline/ 子目录
+
+# 测试 Valhalla API
+curl -s http://localhost:8080/status | python3 -m json.tool
+curl -s -X POST http://localhost:8080/route \
+    -H "Content-Type: application/json" \
+    -d '{"locations":[{"lat":22.2816,"lon":114.1585},{"lat":22.2988,"lon":114.1722}],"costing":"auto"}'
 ```
 
-### Start the service
+### Realtime 模块 (realtime/)
+
 ```bash
-bash scripts/run_service.sh
+cd realtime
+# 需要先有 valhalla_traffic_poc_ 基础项目在 /home/admin/ 下
+./build.sh    # 注入热加载代码到 valhalla GraphReader，编译，部署 Python daemon
 ```
 
-### Docker build (alternative)
+热加载机制的核心文件:
+- `realtime/src/baldr/graphreader_hot_reload.{h,cc}` — GraphReader 热加载扩展 (shared_ptr 原子切换)
+- `realtime/src/baldr/realtime_traffic_updater.{h,cc}` — 实时速度更新器 (时间衰减加权平均 + 双缓冲)
+- `realtime/scripts/realtime_traffic_daemon.py` — Python 守护进程 (heartbeat CSV → edge 映射 → tar 生成)
+
+### 运行测试
+
 ```bash
-docker build -f docker/Dockerfile -t valhalla-traffic .
-docker run -p 8002:8002 -it valhalla-traffic bash
+# 离线测试 (无需 Docker) — 全部可用 ✓
+python3 tests/scripts/test_heartbeat_parse.py tests/data/heartbeat/heartbeat-2025-03-01.csv
+python3 tests/scripts/heartbeat_to_edge_csv.py --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv --max-records 5000 --offline
+python3 tests/scripts/test_realtime_traffic_update.py --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv --output /tmp/test_traffic.tar --sample 500
+
+# Docker 测试 — 需要运行中的 valhalla_service
+bash tests/scripts/valhalla_hotreload_test.sh        # 8 步骤完整验证
+bash tests/scripts/validate_per_edge_injection.sh     # 离线 + 在线 4 阶段验证
+
+# 在线转换 (需要 valhalla_service 在 8002 端口运行)
+python3 tests/scripts/heartbeat_to_edge_csv.py \
+    --heartbeat tests/data/heartbeat/heartbeat-2025-03-01.csv \
+    --max-records 500 \
+    --valhalla-url http://localhost:8002 \
+    --output /tmp/edge_speeds.csv
 ```
-
-### Manual build steps
-```bash
-# Build prime_server
-cd prime_server
-./autogen.sh && ./configure && make install -j1
-
-# Build valhalla
-cd valhalla
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_SINGLE_FILES_WERROR=False
-make -j$(nproc) install
-```
-
-### Debugging with GDB
-```bash
-gdb --args valhalla_service valhalla_tiles/valhalla.json 1
-```
-
-## Key Tools
-
-- `valhalla_live_traffic` - Custom utility for generating/managing traffic data
-- `valhalla_build_tiles` - Build routing tiles from OSM data
-- `valhalla_ways_to_edges` - Generate OSM way to Valhalla edge mappings
-- `valhalla_add_predicted_traffic` - Add predicted traffic to tiles
-- `valhalla_service` - Start the HTTP routing service
-
-## Traffic Data Types
-
-1. **Predicted traffic** - Time-based speeds via CSV files in tile hierarchy
-2. **Live traffic** - Real-time speeds via `traffic.tar` memory-mapped file
 
 ## Architecture
 
-The custom traffic functionality is implemented in `src/valhalla_live_traffic.cc` which:
-- Uses Valhalla's internal `baldr::GraphReader` and `mjolnir::GraphTileBuilder`
-- Links against `microtar` library for `.tar` file manipulation
-- Reads/writes traffic data to Valhalla tile directories
+### 数据流总览
 
-Key CMake modifications in `cmake/`:
-- `CMakeLists.txt` - Adds `valhalla_live_traffic` to `valhalla_data_tools`
-- `src_CMakeLists.txt` - Adds `microtar` library dependency to valhalla target
+```
+Heartbeat GPS CSV → [Data Clean] → [Map Matching] → [Speed Calc] → [Empty Slots Fill] → [Speed Profile]
+                                                                                            ↓
+                                                                              traffic.tar (Valhalla 格式)
+                                                                                            ↓
+                                                                              valhalla_service (热加载)
+```
 
-## Workflow
+### Pipeline 5 阶段
 
-1. Build generates map tiles from OSM data (Andorra by default)
-2. `valhalla_ways_to_edges` creates `way_edges.txt` mapping OSM IDs to Valhalla edge IDs
-3. `update_traffic.py` generates traffic CSV for specific OSM ways
-4. `valhalla_add_predicted_traffic` embeds CSV data into tiles
-5. `valhalla_live_traffic --generate-live-traffic` creates `traffic.tar`
+| 阶段 | 类 | 说明 |
+|------|-----|------|
+| Stage 1 | `DataCleanStage` | 清洗 GPS 轨迹和 trip 数据，过滤异常点 |
+| Stage 2 | `MapMatchingStage` | 调用 Valhalla `/trace_attributes` 将 GPS 匹配到道路 edge |
+| Stage 3 | `SpeedCalculationStage` | 从 map-matched 点计算每条 edge 的速度 |
+| Stage 4 | `EmptySlotsFillingStage` | 填充无数据 edge 的速度（缺失值填充） |
+| Stage 5 | `SpeedProfileGenerationStage` | 生成 Valhalla historical traffic 格式输出 |
 
-## API Endpoints (port 8002)
+核心类:
+- `PipelineOrchestrator` (`pipeline/traffic_pipeline/traffic_pipeline/orchestrator.py`) — 协调所有阶段执行
+- `PipelineConfig` / `DataNode` / `StageResult` (`pipeline/traffic_pipeline/traffic_pipeline/pipeline/base.py`) — 配置和数据流抽象
+- `ValhallaClient` (`pipeline/traffic_pipeline/traffic_pipeline/clients/valhalla_client.py`) — 异步 HTTP 客户端调用 Valhalla API
 
-- `/route` - Time-dependent routing (supports traffic via `date_time` parameter)
-- `/isochrone` - Reachability areas (supports traffic)
-- `/locate` - Match point to nearest road, returns edge info with `predicted_speeds` and `live_speed`
-- `/trace_attributes` - Map matching with edge details
+### Realtime 热加载机制
 
-## Notes
+双缓冲 traffic.tar 原子切换:
 
-- Predicted traffic speeds must be >5 km/h to be considered
-- Live traffic overrides predicted traffic
-- The `traffic.tar` file must be regenerated before each service start for live updates to be picked up
+```
+realtime_traffic_daemon.py
+  ├── 读取 heartbeat CSV 流
+  ├── GPS → edge_index 映射 (_map_to_edge_index)
+  ├── 60s 滑动窗口时间衰减加权平均
+  ├── 生成 next.tar.new → 原子 rename 为 standby.tar
+  └── POST /admin/reload_traffic 通知 valhalla_service 热加载
+```
+
+Valhalla C++ 端 (`realtime/src/baldr/`): 修改 `GraphReader` 添加 `HotReloadTrafficArchive()` 方法，用 mutex 保护 `tile_extract_` 的原子替换。
+
+**关键**: `valhalla_live_traffic --update-edges` 是离线工具，修改 traffic.tar 后必须触发热加载 (`POST /admin/reload_traffic`) 或重启服务，否则 `/locate` 返回 `live=none`。详见 `docs/TECHNICAL_DEEP_DIVE.md` §8.
+
+## Traffic 数据格式
+
+### Predicted Traffic (历史速度)
+- CSV 格式: `edge_id, freeflow_speed, constrained_speed, historical_speeds...`
+- 按 tile 目录层级存放，由 `valhalla_add_predicted_traffic` 嵌入 tiles
+- 速度必须 >5 km/h 才被 Valhalla 采用
+
+### Live Traffic (实时速度)
+- `traffic.tar` 文件，由 Valhalla 通过 mmap 直接读取
+- 每个 tile 一个条目: `TrafficTileHeader` (24 bytes) + `TrafficSpeed[]` (8 bytes/边)
+- TrafficSpeed bitfield: speed(7bit) × 4 + breakpoint(8bit) × 2 + congestion(6bit) × 3
+- Live traffic 优先级高于 predicted traffic
+
+### Heartbeat CSV 格式
+```
+id,f0_,location,bearing,speed,device_time,server_time
+3ae38ba2...,v6y5Uns...,POINT(114.198600738 22.343012951),2.66,4.01,2025-02-28 16:00:00,...
+```
+测试数据: `tests/data/heartbeat/heartbeat-2025-03-01.csv` (香港区域, 450MB, 2.8M 行, CRLF 换行)
+
+## 关键 Valhalla 工具 (需在 Docker 容器内使用)
+
+| 工具 | 用途 |
+|------|------|
+| `valhalla_build_tiles` | 从 OSM .pbf 生成路由 tiles |
+| `valhalla_ways_to_edges` | 生成 OSM way ID → Valhalla edge ID 映射 (`way_edges.txt`) |
+| `valhalla_add_predicted_traffic` | 将 predicted traffic CSV 嵌入 tiles |
+| `valhalla_live_traffic` | 按边实时速度注入 (新增工具, 替代旧的 `valhalla_traffic_demo_utils`) |
+
+## Valhalla API Endpoints
+
+| 端点 | 用途 | 关键参数 |
+|------|------|----------|
+| `/route` | 时间相关路由 | `date_time` 参数启用 traffic |
+| `/trace_attributes` | Map matching | GPS → edge IDs, matched points |
+| `/locate` | 点→道路匹配 | `verbose=true` 返回 `predicted_speeds` 和 `live_speed` |
+| `/isochrone` | 可达性区域 | 支持 traffic |
+| `/admin/reload_traffic` | 热加载 traffic.tar | realtime 模块添加的扩展端点 |
+
+## 路径注意事项
+
+- 容器内路径与宿主机路径不同:
+  - Docker 容器: `/valhalla_tiles/`, `/custom_files/`
+  - 宿主机: 因环境而异，常见 `/home/admin/valhalla_traffic_poc_/valhalla_tiles/`
+- `pipeline/custom_files/valhalla.json` 中 `traffic_extract` 默认为 `/custom_files/traffic.tar`
+- `realtime/build.sh` 依赖 `/home/admin/valhalla_traffic_poc_/` 存在
+
+## Memory Context
+
+相关 design docs 位于 `docs/superpowers/`:
+- `specs/2026-06-28-live-traffic-per-edge-injection-design.md` — Per-edge 注入设计
+- `plans/2026-06-28-live-traffic-per-edge-injection.md` — 实施计划

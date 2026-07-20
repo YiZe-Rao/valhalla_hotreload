@@ -1,81 +1,51 @@
-# IDE
-.idea
-.vscode/
-*.sln
-*.vcxproj
-*.user
-*.suo
-
-# Tiles & Map Data (large binary files)
-valhalla_tiles/
-*.osm.pbf
-*.gph
-*.tar
-*.shapefile.zip
-way_edges.txt
-duplicateways.txt
-traffic.tar
-
-# Data files (must be excluded — CMakeLists.txt is an exception)
-*.csv
-*.json
-*.txt
-*.db
-*.sqlite
-*.parquet
-*.h5
-*.pkl
-!CMakeLists.txt
-!**/CMakeLists.txt
-!**/*CMakeLists.txt
-
-# Data directories
-data/
-dataset/
-raw_data/
-processed_data/
-input/
-output/
-
 # Build artifacts
 build/
-build_output/
-bin/
-lib/
 *.o
-*.a
 *.so
-*.dll
-*.exe
-*.obj
-*.out
+*.a
+*.dylib
+*.pc
+autom4te.cache/
+.libs/
+*.log
 
-# Screenshots
-screenshots/
+# Core dumps
+core
+core.*
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+*.tar
+*.gz
+
+# Valhalla tiles
+*.gph
+*.pbf
+*.csv
+way_edges.txt
 
 # Python
 __pycache__/
 *.pyc
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+venv/
+.env
 
-# Temporary and log files
-*.tmp
-*.log
-*.cache
+# Backup files
+*.bak
+*.backup
 
-# Large binary / archive files
-*.zip
-*.tar.gz
-*.7z
-*.rar
-*.iso
-*.model
-*.weights
-
-# Docker
-*.log
-
-# Timezone data
-timezones*.zip
-
-# Superpowers
-.superpowers/
+# Datasets (large files)
+*.osm.pbf
+*.shapefile.zip
+timezones-*
